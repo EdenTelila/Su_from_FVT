@@ -16,6 +16,7 @@ import tksheet
 from PIL import Image, ImageTk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 pd.set_option('future.no_silent_downcasting', True)
+
 #Declare global variables
 df_tt_si = None
 df_tt_ne = None
@@ -28,7 +29,6 @@ complete_data_df = None
 data_summary_df = None
 su_count = None
 su_with_atleast_1param_count = None
-
 
 #file browse function
 def browse():
@@ -1036,31 +1036,26 @@ searched_df = None
 
 
 # Su reduction calculation
-def su_reduction_calculation():
+def su_reduction_calculation(df):
     """returns a DataFrame of calculation outputs : reduced Su in different stress states and theoretical min Su"""
-    global final_rounded_df, df_tt_si, reduction_method_choice, squeezed_columns, complete_data_df
-    if complete_data_df["Su + interpolation"].empty:
-        messagebox.showerror("Status", "There are no Su measurements with enough w data")
-        return
+    global final_rounded_df, df_tt_si, reduction_method_choice, squeezed_columns
 
     try:
         # rename parameter names for compatibility to save it to the SQL database
-        complete_data_df = complete_data_df.rename(columns={'depth': 'Depth_m', "Su_measured": "Su_FVT_Measured_kPa", 'Su + interpolation': 'Su_FVT_complete', 'Suv + interpolation': 'Suv_FVT_gaps_Interpolated_kPa',
+        df = df.rename(columns={'depth': 'Depth_m', "Su_measured": "Su_FVT_Measured_kPa", 'Su + interpolation': 'Su_FVT_complete', 'Suv + interpolation': 'Suv_FVT_gaps_Interpolated_kPa',
                                                         'sensitivity_St': 'Sensitivity_St', 'unit weight(γ) complete': 'Unit_wt_kN_per_m3',
                                                         "friction angle (φ)": 'friction_angle_phi',"water content(w) + interpolation": 'water_content_w_%',
                                                         'fineness number(F) complete': 'Fineness_number_F_%', "Plasticity index (PI)": 'Plasticity_Index_PI_%' })
-    
         # Reduction Method
         def calculate_mu(row, reduction_method_choice, F_option):
             """returns reduction factor, mu for the selected method of choice"""
             F = float(row[F_option])
-
             if reduction_method_choice == "SGY":
                 if F <= 43:
                     return 1
                 else:
                     return (0.43 / (F / 100)) ** 0.45  # Assuming wL = F
-            elif reduction_method_choice == "Liikenneviraston/Helenelund ":
+            elif reduction_method_choice == "Liikenneviraston/Helenelund":
                 if F <= 50:
                     return 1
                 else:
@@ -1073,65 +1068,75 @@ def su_reduction_calculation():
             return None
 
         # Implement calculation logics
-        def su_calculation_and_theoretical_min(df):
-            """returns a Dataframe of calculation results"""
-            global reduction_method_choice
-            df = df.copy()
-            reduction_method_choice = reduction_method.get()
-            # Calculate reduction factor (mu) based on the selected method
-            df['mu'] = df.apply(lambda row: calculate_mu(row, reduction_method_choice,F_option="Fineness_number_F_%"), axis=1)
-            df['mu2'] = df.apply(lambda row: calculate_mu(row, reduction_method_choice, F_option="fineness number(F) all correlation"), axis=1)
-            # Calculate Reduced Su by multiplying mu with Su_FVT
-            df['Reduced_Su_FVT_kPa'] = df['Su_FVT_complete'] * df['mu']
-            df['Reduced Su F_all_correlated'] = df['Su_FVT_complete'] * df['mu2']
-            # Calculate Su for different stress states
-            df['Triaxial_Compression_CKUC'] = df['Reduced_Su_FVT_kPa'] / 0.64
-            df['Direct_Simple_Shear_DSS'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.61
-            df['Triaxial_Extension_CKUE'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.49
-            df['Plane_Strain_Compression_PSC'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 1.03
-            df['Unconsolidated_Undrained_UU'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.83
-            df['Plane_Strain_Extension_PSE'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.58
-            # Theoretical minimum Su; MCC and Liikennevirasto, 2018, _ with effective unit weight (assuming unit weight of water as 10kg/m3)
-            df['ko'] = df.apply(lambda row: 1 - np.sin(np.radians(row['friction_angle_phi'])), axis=1)  # Ko, at rest earth pressure coefficient
-            df['M'] = df.apply(lambda row: (6 * np.sin(np.radians(row['friction_angle_phi']))) / (      # M, slope of the CSL
-                    3 - np.sin(np.radians(row['friction_angle_phi']))), axis=1)
-            df['p_ini'] = (df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) + 2 * df['Depth_m'] * (       # P_ini, initial mean effective stress
-                        df['Unit_wt_kN_per_m3'] - 10) * df['ko']) / 3
-            df['q_ini'] = df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) - df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) * df['ko'] # q_ini, initial deviatoric stress
-            df['po_iso'] = np.where(df['Depth_m'] == 0, 0, ((df['q_ini'] ** 2) / (df['M'] ** 2 * df['p_ini'])) + df['p_ini'])   # Po, initial isotropic stress
-            df['p_csl'] = df['po_iso'] / 2                                                                                      # P_csl, mean effective stress at CSL
-            df['q_csl'] = df.apply(lambda row: (row['M'] ** 2 * row['p_csl'] * (row['po_iso'] - row['p_csl'])) ** 0.5, axis=1)  # q_csl deviatoric stress at CSL
-            df['min_Su_MCC'] = df['q_csl'] / 2 / 2  # the second division is because the comparison is made with FVT, which is about half of the triaxial compression.
-            df['min_Su_Liikennevirasto'] = 0.15 * df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10)    # Theoretical min Su from Liikennevirasto ohjeita
-            # rearranging the calculation output columns
-            selected_columns = ['Global_ID', 'Point_ID', 'X', 'Y', 'Z', 'Depth_m', "soil_type", "Su_FVT_Measured_kPa", 'Su_FVT_complete',
-                                'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St', 'unit weight(γ) measured', 'unit weight(γ) + interpolation',
-                                'Unit_wt_kN_per_m3', 'friction_angle_phi', 'water content(w) measured', 'water_content_w_%',"fineness number(F) measured",
-                                "fineness number(F) + interpolation", 'fineness number(F) all correlation','Fineness_number_F_%', 'Plasticity_Index_PI_%',
-                                'mu', 'Reduced Su F_all_correlated', 'Reduced_Su_FVT_kPa', 'Triaxial_Compression_CKUC', 'Direct_Simple_Shear_DSS',
-                                'Triaxial_Extension_CKUE','Plane_Strain_Compression_PSC','Unconsolidated_Undrained_UU', 'Plane_Strain_Extension_PSE',
-                                'p_ini', 'q_ini', 'po_iso', 'p_csl', 'q_csl', 'ko', 'M', 'min_Su_MCC', 'min_Su_Liikennevirasto']
-            return df[selected_columns]
-        # store the calculation data to a new data frame
-        final_df = su_calculation_and_theoretical_min(complete_data_df)
+
+        """returns a Dataframe of calculation results"""
+        global reduction_method_choice
+        reduction_method_choice = reduction_method.get()
+        # Calculate reduction factor (mu) based on the selected method
+        df['mu'] = df.apply(lambda row: calculate_mu(row, reduction_method_choice,F_option="Fineness_number_F_%"), axis=1)
+        df['mu2'] = df.apply(lambda row: calculate_mu(row, reduction_method_choice, F_option="fineness number(F) all correlation"), axis=1)
+        # Calculate Reduced Su by multiplying mu with Su_FVT
+        df['Reduced_Su_FVT_kPa'] = df['Su_FVT_complete'] * df['mu']
+        df['Reduced Su F_all_correlated'] = df['Su_FVT_complete'] * df['mu2']
+        # Calculate Su for different stress states
+        df['Triaxial_Compression_CKUC'] = df['Reduced_Su_FVT_kPa'] / 0.64
+        df['Direct_Simple_Shear_DSS'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.61
+        df['Triaxial_Extension_CKUE'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.49
+        df['Plane_Strain_Compression_PSC'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 1.03
+        df['Unconsolidated_Undrained_UU'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.83
+        df['Plane_Strain_Extension_PSE'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.58
+        # Theoretical minimum Su; MCC and Liikennevirasto, 2018, _ with effective unit weight (assuming unit weight of water as 10kg/m3)
+        df['ko'] = df.apply(lambda row: 1 - np.sin(np.radians(row['friction_angle_phi'])), axis=1)  # Ko, at rest earth pressure coefficient
+        df['M'] = df.apply(lambda row: (6 * np.sin(np.radians(row['friction_angle_phi']))) / (      # M, slope of the CSL
+                3 - np.sin(np.radians(row['friction_angle_phi']))), axis=1)
+        df['p_ini'] = (df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) + 2 * df['Depth_m'] * (       # P_ini, initial mean effective stress
+                    df['Unit_wt_kN_per_m3'] - 10) * df['ko']) / 3
+        df['q_ini'] = df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) - df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) * df['ko'] # q_ini, initial deviatoric stress
+        df['po_iso'] = np.where(df['Depth_m'] == 0, 0, ((df['q_ini'] ** 2) / (df['M'] ** 2 * df['p_ini'])) + df['p_ini'])   # Po, initial isotropic stress
+        df['p_csl'] = df['po_iso'] / 2                                                                                      # P_csl, mean effective stress at CSL
+        df['q_csl'] = df.apply(lambda row: (row['M'] ** 2 * row['p_csl'] * (row['po_iso'] - row['p_csl'])) ** 0.5, axis=1)  # q_csl deviatoric stress at CSL
+        df['min_Su_MCC'] = df['q_csl'] / 2 / 2  # the second division is because the comparison is made with FVT, which is about half of the triaxial compression.
+        df['min_Su_Liikennevirasto'] = 0.15 * df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10)    # Theoretical min Su from Liikennevirasto ohjeita
+        # rearranging the calculation output columns
+        selected_columns = ['Global_ID', 'Point_ID', 'X', 'Y', 'Z', 'Depth_m', "soil_type", "Su_FVT_Measured_kPa", 'Su_FVT_complete',
+                            'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St', 'unit weight(γ) measured', 'unit weight(γ) + interpolation',
+                            'Unit_wt_kN_per_m3', 'friction_angle_phi', 'water content(w) measured', 'water_content_w_%',"fineness number(F) measured",
+                            "fineness number(F) + interpolation", 'fineness number(F) all correlation','Fineness_number_F_%', 'Plasticity_Index_PI_%',
+                            'mu', 'Reduced Su F_all_correlated', 'Reduced_Su_FVT_kPa', 'Triaxial_Compression_CKUC', 'Direct_Simple_Shear_DSS',
+                            'Triaxial_Extension_CKUE','Plane_Strain_Compression_PSC','Unconsolidated_Undrained_UU', 'Plane_Strain_Extension_PSE',
+                            'p_ini', 'q_ini', 'po_iso', 'p_csl', 'q_csl', 'ko', 'M', 'min_Su_MCC', 'min_Su_Liikennevirasto']
+        df = df[selected_columns]
+
+        cols_to_round = ["Su_FVT_Measured_kPa", 'Su_FVT_complete', 'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St',
+                         'Unit_wt_kN_per_m3', 'friction_angle_phi',
+                         'water_content_w_%', "fineness number(F) measured", "fineness number(F) + interpolation",
+                         'fineness number(F) all correlation',
+                         'Fineness_number_F_%', 'Plasticity_Index_PI_%', 'mu', 'ko', 'M', 'Reduced Su F_all_correlated',
+                         'Reduced_Su_FVT_kPa', 'Triaxial_Compression_CKUC',
+                         'Direct_Simple_Shear_DSS', 'Triaxial_Extension_CKUE', 'Plane_Strain_Compression_PSC',
+                         'Unconsolidated_Undrained_UU', 'Plane_Strain_Extension_PSE',
+                         'p_ini', 'q_ini', 'po_iso', 'p_csl', 'q_csl', 'min_Su_MCC', 'min_Su_Liikennevirasto']
         # round the calculation output columns to 6 significant digits
-        cols_to_round = ["Su_FVT_Measured_kPa", 'Su_FVT_complete', 'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St', 'Unit_wt_kN_per_m3', 'friction_angle_phi',
-                        'water_content_w_%',"fineness number(F) measured", "fineness number(F) + interpolation",'fineness number(F) all correlation',
-                        'Fineness_number_F_%', 'Plasticity_Index_PI_%','mu', 'ko', 'M', 'Reduced Su F_all_correlated', 'Reduced_Su_FVT_kPa','Triaxial_Compression_CKUC',
-                        'Direct_Simple_Shear_DSS', 'Triaxial_Extension_CKUE','Plane_Strain_Compression_PSC','Unconsolidated_Undrained_UU', 'Plane_Strain_Extension_PSE',
-                        'p_ini', 'q_ini', 'po_iso', 'p_csl', 'q_csl', 'min_Su_MCC', 'min_Su_Liikennevirasto']
-        final_rounded_df = final_df.copy()
-        final_rounded_df[cols_to_round] = final_df[cols_to_round].round(6)
+        df[cols_to_round] = df[cols_to_round].round(6)
         # rename some parameters for better representation
-        final_rounded_df = final_rounded_df.rename(columns={"fineness number(F) measured": "fineness_number_F_measured", "Su_FVT_complete": "Su_FVT_gaps_Interpolated_kPa", "mu": "red_factor_mu"})
-        final_rounded_df["friction_angle_phi"] = pd.to_numeric(final_rounded_df["friction_angle_phi"], errors="coerce")
-        final_rounded_df["Su_FVT_Measured_kPa"] = np.where(final_rounded_df["Su_FVT_Measured_kPa"] == 0, np.nan,
-                                                        final_rounded_df["Su_FVT_Measured_kPa"])
-        final_rounded_df["Point_ID"] = np.where(final_rounded_df["Point_ID"].notna(), final_rounded_df["Point_ID"], 0)
+        df = df.rename(columns={"fineness number(F) measured": "fineness_number_F_measured",
+                                                            "Su_FVT_complete": "Su_FVT_gaps_Interpolated_kPa",
+                                                            "mu": "red_factor_mu"})
+        df["friction_angle_phi"] = pd.to_numeric(df["friction_angle_phi"], errors="coerce")
+        df["Su_FVT_Measured_kPa"] = np.where(df["Su_FVT_Measured_kPa"] == 0, np.nan,
+                                                           df["Su_FVT_Measured_kPa"])
+        df["Point_ID"] = np.where(df["Point_ID"].notna(), df["Point_ID"], 0)
+
+        return df
     except Exception as e:
-        messagebox.showerror("Status", f"No data found.\nPlease browse and extract tek file and fill missing parameters first.")
+        messagebox.showerror("Status", f"Calculation not executed.\nPlease browse and extract tek file and fill missing parameters first.")
         logging.error(f"No data found - {e}")
         return
+
+def calculate_su():
+    global final_rounded_df
+    # store the calculation data to a new data frame
+    final_rounded_df = su_reduction_calculation(complete_data_df)
 
     # up on pressing Calculate Store the data with these Server and database details
     try:
@@ -1319,11 +1324,9 @@ def database_query():
 # Plotting all test locations with valid data
 def plot_all_locations(df, selected_columns):
     """Plots Su vs depth on a new window for all the stress path options"""
-    global reduction_method_choice
     df["Su_FVT_Measured_kPa"] = np.where(df["Su_FVT_Measured_kPa"] == 0, np.nan, df["Su_FVT_Measured_kPa"]) # replace 0 values with nan to avoid plot irregularities
-    df["Reduced_Su_from_Measurement"] = np.where(df["fineness_number_F_measured"]!=0, df["Reduced_Su_FVT_kPa"], np.nan) # create a column containing the reduced Su from measured F only
-    df["Reduced Su FVT_interp+correl"] = df["Reduced_Su_FVT_kPa"]   # create a column containing the reduced Su from both measured and estimated F values
-
+    df["Reduced Su (F measured)"] = np.where(df["fineness_number_F_measured"]!=0, df["Reduced_Su_FVT_kPa"], np.nan) # create a column containing the reduced Su from measured F only
+    df["Reduced Su (F measured + interp + correl)"] = df["Reduced_Su_FVT_kPa"]   # create a column containing the reduced Su from both measured and estimated F values
     # Find unique X and Y values (plot per location)
     unique_coords = df[['X', 'Y']].drop_duplicates()
     num_plots = len(unique_coords)
@@ -1332,8 +1335,8 @@ def plot_all_locations(df, selected_columns):
     fig, axes = plt.subplots(num_rows, NUM_COLUMNS, figsize=(12, num_rows * 8))
     axes = axes.flatten()
     # assigning plot markers and colours for each line
-    markers = ['^', 'o', 'o', 'o', 's', 'D', 'v', '<', '>', 'x', '*']
-    colors = ['#FF7171', '#1f77b4', 'orange', '#28A745', 'magenta', '#9982FF', 'black', 'cyan', 'yellow', 'navy', 'blue']
+    markers = ['o', 'o', 'o', '^', 's', 'D', 'v', '<', '>', 'x', '*']
+    colors = ['#1f77b4', '#0DD3DA', 'orange', '#FF7171', 'magenta', '#9982FF', 'black', 'cyan', 'yellow', 'navy', 'blue']
     index = 0
     for i in range(len(unique_coords)):
         x_value = unique_coords.iloc[i]['X']
@@ -1404,8 +1407,8 @@ def plotting():
             #map the names from the GUI to the output DataFrame
             column_map = {
                 "Measured Su, FVT": "Su_FVT_Measured_kPa",
-                "Reduced Su, FVT": "Reduced Su FVT_interp+correl",
-                "Reduced_Su_from_Measurement": "Reduced_Su_from_Measurement",
+                "Reduced Su, FVT": "Reduced Su (F measured + interp + correl)",
+                "Reduced_Su_from_Measurement": "Reduced Su (F measured)",
                 "Su, Triaxial Compression, CKUC": "Triaxial_Compression_CKUC",
                 "Su, Direct Simple shear, DSS": "Direct_Simple_Shear_DSS",
                 "Su, Triaxial Extension, CKUE": "Triaxial_Extension_CKUE",
@@ -1440,7 +1443,7 @@ def plotting():
                 selected.append("Su, Minimum, Liikennevirasto")
             selected_columns = [column_map[label] for label in selected]
             if selected_columns:
-                selected_columns.insert(0, "Reduced Su F_all_correlated")   # add the fully correlated F Su reduced plots as default
+                selected_columns.append("Reduced Su F_all_correlated")   # add the fully correlated F Su reduced plots as default
                 plot_all_locations(final_rounded_df, selected_columns)
             else:
                 messagebox.showinfo("Check Status", "No options selected.\nPlease select which plot to include.")
@@ -1787,7 +1790,7 @@ image_label.place(relx=0.5867,rely=0.2128)
 tk.Label(root, text="\nMissing Parameter Handling Choice").pack(anchor="w", padx=10)
 missing_parameter = tk.StringVar(value="manual")
 tk.Radiobutton(root, text="Manual Entry", variable=missing_parameter, value="manual", bg="white").pack(anchor="w", padx=30)
-tk.Label(root, text="after selecting Manual entry, press fill missing parameters, which opens an excel file to fill the missing parameters manually",
+tk.Label(root, text="After selecting Manual entry, press fill missing parameters, which opens a spreadsheet to fill the missing parameters manually",
          font=("Arial", 8, "italic"), bg="white").pack(anchor="w", padx=40)
 frame2 = tk.Frame(root, bg="white")
 frame2.pack(anchor="w", padx=10, pady=5)
@@ -1804,7 +1807,7 @@ methods = [("The Liikenneviraston/Helenelund Method", "Liikenneviraston/Helenelu
            ("The SGI/Eurocode_1997-2:2007/ Method", "SGI/Eurocode")]
 for text, value in methods:
     tk.Radiobutton(root, text=text, variable=reduction_method, value=value, bg="white").pack(anchor="w", padx=30)
-ttk.Button(root, text="Calculate", command=su_reduction_calculation).pack()
+ttk.Button(root, text="Calculate", command=calculate_su).pack()
 
 # Output Plot Preferences
 ttk.Label(root, text="\nOutput Plot Preferences").pack(anchor="w", padx=10)
