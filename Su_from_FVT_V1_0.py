@@ -1326,7 +1326,7 @@ def plot_all_locations(df, selected_columns):
     """Plots Su vs depth on a new window for all the stress path options"""
     df["Su_FVT_Measured_kPa"] = np.where(df["Su_FVT_Measured_kPa"] == 0, np.nan, df["Su_FVT_Measured_kPa"]) # replace 0 values with nan to avoid plot irregularities
     df["Reduced Su (F measured)"] = np.where(df["fineness_number_F_measured"]!=0, df["Reduced_Su_FVT_kPa"], np.nan) # create a column containing the reduced Su from measured F only
-    df["Reduced Su (F measured + interp + correl)"] = df["Reduced_Su_FVT_kPa"]   # create a column containing the reduced Su from both measured and estimated F values
+    df["Reduced Su (F interp + correl)"] = df["Reduced_Su_FVT_kPa"]   # create a column containing the reduced Su from both measured and estimated F values
     # Find unique X and Y values (plot per location)
     unique_coords = df[['X', 'Y']].drop_duplicates()
     num_plots = len(unique_coords)
@@ -1407,7 +1407,7 @@ def plotting():
             #map the names from the GUI to the output DataFrame
             column_map = {
                 "Measured Su, FVT": "Su_FVT_Measured_kPa",
-                "Reduced Su, FVT": "Reduced Su (F measured + interp + correl)",
+                "Reduced Su, FVT": "Reduced Su (F interp + correl)",
                 "Reduced_Su_from_Measurement": "Reduced Su (F measured)",
                 "Su, Triaxial Compression, CKUC": "Triaxial_Compression_CKUC",
                 "Su, Direct Simple shear, DSS": "Direct_Simple_Shear_DSS",
