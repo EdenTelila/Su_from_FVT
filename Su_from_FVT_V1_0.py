@@ -301,7 +301,7 @@ def extract_data_and_preprocessing():
         # compute the sensitivity on missing lines
         def compute_sensitivity(row):
             """returns sensitivity by dividing the undisturbed by disturbed Su values"""
-            if pd.notnull(row['sensitivity_St']):
+            if pd.notnull(row['sensitivity_St']) and row['sensitivity_St'] != 0:
                 return row['sensitivity_St']
             try:
                 return row['Su + interpolation'] / row['Suv + interpolation']
@@ -1068,7 +1068,6 @@ def su_reduction_calculation(df):
             return None
 
         # Implement calculation logics
-
         """returns a Dataframe of calculation results"""
         global reduction_method_choice
         reduction_method_choice = reduction_method.get()
@@ -1089,45 +1088,59 @@ def su_reduction_calculation(df):
         df['ko'] = df.apply(lambda row: 1 - np.sin(np.radians(row['friction_angle_phi'])), axis=1)  # Ko, at rest earth pressure coefficient
         df['M'] = df.apply(lambda row: (6 * np.sin(np.radians(row['friction_angle_phi']))) / (      # M, slope of the CSL
                 3 - np.sin(np.radians(row['friction_angle_phi']))), axis=1)
-        df['p_ini'] = (df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) + 2 * df['Depth_m'] * (       # P_ini, initial mean effective stress
-                    df['Unit_wt_kN_per_m3'] - 10) * df['ko']) / 3
-        df['q_ini'] = df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) - df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10) * df['ko'] # q_ini, initial deviatoric stress
-        df['po_iso'] = np.where(df['Depth_m'] == 0, 0, ((df['q_ini'] ** 2) / (df['M'] ** 2 * df['p_ini'])) + df['p_ini'])   # Po, initial isotropic stress
-        df['p_csl'] = df['po_iso'] / 2                                                                                      # P_csl, mean effective stress at CSL
-        df['q_csl'] = df.apply(lambda row: (row['M'] ** 2 * row['p_csl'] * (row['po_iso'] - row['p_csl'])) ** 0.5, axis=1)  # q_csl deviatoric stress at CSL
-        df['min_Su_MCC'] = df['q_csl'] / 2 / 2  # the second division is because the comparison is made with FVT, which is about half of the triaxial compression.
-        df['min_Su_Liikennevirasto'] = 0.15 * df['Depth_m'] * (df['Unit_wt_kN_per_m3'] - 10)    # Theoretical min Su from Liikennevirasto ohjeita
-        # rearranging the calculation output columns
-        selected_columns = ['Global_ID', 'Point_ID', 'X', 'Y', 'Z', 'Depth_m', "soil_type", "Su_FVT_Measured_kPa", 'Su_FVT_complete',
+
+        stresses = []
+
+        for (x, y), group in df.groupby(['X', 'Y']):
+            group = group.sort_values('Depth_m').copy()
+            group['delta_z'] = group['Depth_m'].diff().fillna(group['Depth_m'])
+            group['sigma_v'] = ((np.where(group['Unit_wt_kN_per_m3'] > 10,
+                                          (group['Unit_wt_kN_per_m3'] - 10) * group['delta_z'], 0))
+                                .cumsum())
+            group['sigma_h'] = group['ko'] * group['sigma_v']
+            group['p_ini'] = (group['sigma_v'] + 2 * group['sigma_h']) / 3
+            stresses.append(group)
+
+        df = pd.concat(stresses, ignore_index=True)
+
+        df['q_ini'] = df['sigma_v'] - df['sigma_h']
+        df['po_iso'] = ((df['q_ini'] ** 2) / (df['M'] ** 2 * df['p_ini'])) + df['p_ini']
+        df['p_csl'] = df['po_iso'] / 2
+        df['q_csl'] = np.sqrt(df['M'] ** 2 * df['p_csl'] * (df['po_iso'] - df['p_csl']))
+        df['min_Su_MCC'] = df['q_csl'] / 4
+        df['min_Su_Liikennevirasto'] = 0.15 * df['sigma_v']
+
+        # rename some parameters for better representation
+        df = df.rename(columns={"fineness number(F) measured": "fineness_number_F_measured",
+                                                            "Su_FVT_complete": "Su_FVT_gaps_Interpolated_kPa",
+                                                            "mu": "red_factor_mu"})
+
+        selected_columns = ['Global_ID', 'Point_ID', 'X', 'Y', 'Z', 'Depth_m', "soil_type", "Su_FVT_Measured_kPa", 'Su_FVT_gaps_Interpolated_kPa',
                             'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St', 'unit weight(γ) measured', 'unit weight(γ) + interpolation',
-                            'Unit_wt_kN_per_m3', 'friction_angle_phi', 'water content(w) measured', 'water_content_w_%',"fineness number(F) measured",
+                            'Unit_wt_kN_per_m3', 'friction_angle_phi', 'water content(w) measured', 'water_content_w_%',"fineness_number_F_measured",
                             "fineness number(F) + interpolation", 'fineness number(F) all correlation','Fineness_number_F_%', 'Plasticity_Index_PI_%',
-                            'mu', 'Reduced Su F_all_correlated', 'Reduced_Su_FVT_kPa', 'Triaxial_Compression_CKUC', 'Direct_Simple_Shear_DSS',
+                            'red_factor_mu', 'Reduced Su F_all_correlated', 'Reduced_Su_FVT_kPa', 'Triaxial_Compression_CKUC', 'Direct_Simple_Shear_DSS',
                             'Triaxial_Extension_CKUE','Plane_Strain_Compression_PSC','Unconsolidated_Undrained_UU', 'Plane_Strain_Extension_PSE',
                             'p_ini', 'q_ini', 'po_iso', 'p_csl', 'q_csl', 'ko', 'M', 'min_Su_MCC', 'min_Su_Liikennevirasto']
-        df = df[selected_columns]
 
-        cols_to_round = ["Su_FVT_Measured_kPa", 'Su_FVT_complete', 'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St',
+        cols_to_round = ["Su_FVT_Measured_kPa", 'Su_FVT_gaps_Interpolated_kPa', 'Suv_FVT_gaps_Interpolated_kPa', 'Sensitivity_St',
                          'Unit_wt_kN_per_m3', 'friction_angle_phi',
-                         'water_content_w_%', "fineness number(F) measured", "fineness number(F) + interpolation",
+                         'water_content_w_%', "fineness_number_F_measured", "fineness number(F) + interpolation",
                          'fineness number(F) all correlation',
-                         'Fineness_number_F_%', 'Plasticity_Index_PI_%', 'mu', 'ko', 'M', 'Reduced Su F_all_correlated',
+                         'Fineness_number_F_%', 'Plasticity_Index_PI_%', 'red_factor_mu', 'ko', 'M', 'Reduced Su F_all_correlated',
                          'Reduced_Su_FVT_kPa', 'Triaxial_Compression_CKUC',
                          'Direct_Simple_Shear_DSS', 'Triaxial_Extension_CKUE', 'Plane_Strain_Compression_PSC',
                          'Unconsolidated_Undrained_UU', 'Plane_Strain_Extension_PSE',
                          'p_ini', 'q_ini', 'po_iso', 'p_csl', 'q_csl', 'min_Su_MCC', 'min_Su_Liikennevirasto']
         # round the calculation output columns to 6 significant digits
         df[cols_to_round] = df[cols_to_round].round(6)
-        # rename some parameters for better representation
-        df = df.rename(columns={"fineness number(F) measured": "fineness_number_F_measured",
-                                                            "Su_FVT_complete": "Su_FVT_gaps_Interpolated_kPa",
-                                                            "mu": "red_factor_mu"})
+
         df["friction_angle_phi"] = pd.to_numeric(df["friction_angle_phi"], errors="coerce")
         df["Su_FVT_Measured_kPa"] = np.where(df["Su_FVT_Measured_kPa"] == 0, np.nan,
                                                            df["Su_FVT_Measured_kPa"])
         df["Point_ID"] = np.where(df["Point_ID"].notna(), df["Point_ID"], 0)
 
-        return df
+        return df[selected_columns]
     except Exception as e:
         messagebox.showerror("Status", f"Calculation not executed.\nPlease browse and extract tek file and fill missing parameters first.")
         logging.error(f"No data found - {e}")
@@ -1137,7 +1150,8 @@ def calculate_su():
     global final_rounded_df
     # store the calculation data to a new data frame
     final_rounded_df = su_reduction_calculation(complete_data_df)
-
+    if final_rounded_df is None:
+        return
     # up on pressing Calculate Store the data with these Server and database details
     try:
         server = 'FI-PF44D7ZX'
@@ -1335,8 +1349,8 @@ def plot_all_locations(df, selected_columns):
     fig, axes = plt.subplots(num_rows, NUM_COLUMNS, figsize=(12, num_rows * 8))
     axes = axes.flatten()
     # assigning plot markers and colours for each line
-    markers = ['o', 'o', 'o', '^', 's', 'D', 'v', '<', '>', 'x', '*']
-    colors = ['#1f77b4', '#0DD3DA', 'orange', '#FF7171', 'magenta', '#9982FF', 'black', 'cyan', 'yellow', 'navy', 'blue']
+    markers = ['o', 'o', 'o', 'o', '^', 's', 'D', 'v', '<', '>', 'x', '*']
+    colors = ['#1f77b4', '#0DD3DA', 'orange', '#2AD32A', '#FF7171', 'magenta', '#9982FF', 'black', 'cyan', '#C4C92F', 'navy', 'blue']
     index = 0
     for i in range(len(unique_coords)):
         x_value = unique_coords.iloc[i]['X']
