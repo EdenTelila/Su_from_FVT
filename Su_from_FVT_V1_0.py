@@ -745,8 +745,6 @@ def open_manual_editor(df):
                                                   on=["X", "Y", "Z", "depth"])
             no_global_id = new_df.pop('Global_ID')  # remove global id from new_df and name it col
             new_df.insert(0, 'Global_ID', no_global_id)  # put global id back as a first column
-            new_df["Su + interpolation"] = pd.to_numeric(new_df["Su + interpolation"], errors="coerce")
-            new_df["fineness number(F) complete"] = pd.to_numeric(new_df["fineness number(F) complete"], errors="coerce")
             complete_data_df = new_df   # replace the complete DataFrame
             complete_data_df.to_pickle("preprocessing.pkl") # replace the previously saved pickle data with the updated one
             messagebox.showinfo("Status", "Data updated successfully!")
@@ -1018,16 +1016,16 @@ def missing_parameters_estimation():
 def check_system_filled():
     """returns a DateFrame of system default with manually revised data"""
     global complete_data_df
-    try:
-        os.path.isfile("preprocessing.pkl") # check if the pkl file from the initial data extraction/updated version is present
-        df = pd.read_pickle("preprocessing.pkl")   # create a df from the pickled file
-        complete_data_df = open_manual_editor(df)   # update the system default estimations with the manually revised one
-        complete_data_df.to_pickle("preprocessing.pkl")    # save the updated version
-    except FileNotFoundError:
-        messagebox.showerror(f"Status","No data found!\nPlease first click fill missing parameters with system default option")
-    except Exception as e:
-        messagebox.showerror("Status", "An error occurred while loading the data.\nPlease check the tek file and try again.")
-        logging.error(f"Error in filling missing parameters - {e}")
+    #try:
+    os.path.isfile("preprocessing.pkl") # check if the pkl file from the initial data extraction/updated version is present
+    df = pd.read_pickle("preprocessing.pkl")   # create a df from the pickled file
+    complete_data_df = open_manual_editor(df)   # update the system default estimations with the manually revised one
+    complete_data_df.to_pickle("preprocessing.pkl")    # save the updated version
+    #except FileNotFoundError:
+        #messagebox.showerror(f"Status","No data found!\nPlease first click fill missing parameters with system default option")
+    #except Exception as e:
+        #messagebox.showerror("Status", "An error occurred while loading the data.\nPlease check the tek file and try again.")
+        #logging.error(f"Error in filling missing parameters - {e}")
 
 reduction_method_choice = None
 final_rounded_df = None
@@ -1039,8 +1037,18 @@ searched_df = None
 def su_reduction_calculation(df):
     """returns a DataFrame of calculation outputs : reduced Su in different stress states and theoretical min Su"""
     global final_rounded_df, df_tt_si, reduction_method_choice, squeezed_columns
-
     try:
+        numeric_cols = [
+            "M", "p_csl", "po_iso",
+            "Su + interpolation",
+            "fineness number(F) complete",
+            "unit weight(γ) complete",
+            "friction angle (φ)",
+            "Plasticity index (PI)"
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
         # rename parameter names for compatibility to save it to the SQL database
         df = df.rename(columns={'depth': 'Depth_m', "Su_measured": "Su_FVT_Measured_kPa", 'Su + interpolation': 'Su_FVT_complete', 'Suv + interpolation': 'Suv_FVT_gaps_Interpolated_kPa',
                                                         'sensitivity_St': 'Sensitivity_St', 'unit weight(γ) complete': 'Unit_wt_kN_per_m3',
@@ -1068,15 +1076,17 @@ def su_reduction_calculation(df):
             return None
 
         # Implement calculation logics
-        """returns a Dataframe of calculation results"""
         global reduction_method_choice
         reduction_method_choice = reduction_method.get()
+
         # Calculate reduction factor (mu) based on the selected method
         df['mu'] = df.apply(lambda row: calculate_mu(row, reduction_method_choice,F_option="Fineness_number_F_%"), axis=1)
         df['mu2'] = df.apply(lambda row: calculate_mu(row, reduction_method_choice, F_option="fineness number(F) all correlation"), axis=1)
+
         # Calculate Reduced Su by multiplying mu with Su_FVT
         df['Reduced_Su_FVT_kPa'] = df['Su_FVT_complete'] * df['mu']
         df['Reduced Su F_all_correlated'] = df['Su_FVT_complete'] * df['mu2']
+
         # Calculate Su for different stress states
         df['Triaxial_Compression_CKUC'] = df['Reduced_Su_FVT_kPa'] / 0.64
         df['Direct_Simple_Shear_DSS'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.61
@@ -1084,30 +1094,49 @@ def su_reduction_calculation(df):
         df['Plane_Strain_Compression_PSC'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 1.03
         df['Unconsolidated_Undrained_UU'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.83
         df['Plane_Strain_Extension_PSE'] = df['Reduced_Su_FVT_kPa'] / 0.64 * 0.58
-        # Theoretical minimum Su; MCC and Liikennevirasto, 2018, _ with effective unit weight (assuming unit weight of water as 10kg/m3)
-        df['ko'] = df.apply(lambda row: 1 - np.sin(np.radians(row['friction_angle_phi'])), axis=1)  # Ko, at rest earth pressure coefficient
-        df['M'] = df.apply(lambda row: (6 * np.sin(np.radians(row['friction_angle_phi']))) / (      # M, slope of the CSL
-                3 - np.sin(np.radians(row['friction_angle_phi']))), axis=1)
 
-        stresses = []
+        # Theoretical minimum Su; with effective unit weight (assuming unit weight of water as 10kN/m3)
+        df['ko'] = 1 - np.sin(np.radians(df['friction_angle_phi']))
+        df['M'] = (6 * np.sin(np.radians(df['friction_angle_phi']))) / (3 - np.sin(np.radians(df['friction_angle_phi'])))
+
+        stresses = []       #initiate an empty list to append the calculated stresses
 
         for (x, y), group in df.groupby(['X', 'Y']):
             group = group.sort_values('Depth_m').copy()
             group['delta_z'] = group['Depth_m'].diff().fillna(group['Depth_m'])
-            group['sigma_v'] = ((np.where(group['Unit_wt_kN_per_m3'] > 10,
-                                          (group['Unit_wt_kN_per_m3'] - 10) * group['delta_z'], 0))
-                                .cumsum())
-            group['sigma_h'] = group['ko'] * group['sigma_v']
-            group['p_ini'] = (group['sigma_v'] + 2 * group['sigma_h']) / 3
+
+            # Calculate effective unit weight (γ' = γ - 10)
+            group['gamma_eff'] = np.maximum(group['Unit_wt_kN_per_m3'] - 10, 0)
+
+            # calculate the cumulative insitu vertical stress
+            # initialise
+            sigma_v = 0.0
+            p_ini_list = []
+            sigma_v_list = []
+
+            for i, row in group.iterrows():
+                sigma_v += row['gamma_eff'] * row['delta_z']  # cumulative effective stress
+                sigma_v_list.append(sigma_v)
+                sigma_h = row['ko'] * sigma_v
+                p_ini = (sigma_v + 2 * sigma_h) / 3
+                p_ini_list.append(p_ini)
+
+            group['sigma_v'] = sigma_v_list     # insitu vertical stress
+            group['sigma_h'] = group['ko'] * group['sigma_v']   ## insitu horizontal stress
+            group['p_ini'] = p_ini_list     #initial mean effective stress
+
             stresses.append(group)
 
         df = pd.concat(stresses, ignore_index=True)
+        # Calculate q_ini, po_iso, p_csl
+        df['q_ini'] = df['sigma_v'] - df['sigma_h']     #Initial deviatoric stress
+        df['po_iso'] = ((df['q_ini'] ** 2) / (df['M'] ** 2 * df['p_ini'].replace(0, np.nan))) + df['p_ini'] # isotropic stress (q =0)
+        df['p_csl'] = df['po_iso'] / 2 # mean effective stress at the critical state
+        df['q_csl'] = np.sqrt(np.maximum(df['M'] ** 2 * df['p_csl'] * (df['po_iso'] - df['p_csl']), 0)) # Deviatoric stress at critical state
 
-        df['q_ini'] = df['sigma_v'] - df['sigma_h']
-        df['po_iso'] = ((df['q_ini'] ** 2) / (df['M'] ** 2 * df['p_ini'])) + df['p_ini']
-        df['p_csl'] = df['po_iso'] / 2
-        df['q_csl'] = np.sqrt(df['M'] ** 2 * df['p_csl'] * (df['po_iso'] - df['p_csl']))
+        # Theoretical minimum Su - MCC
         df['min_Su_MCC'] = df['q_csl'] / 4
+        # Theoretical minimum Su - Liikennevirasto
         df['min_Su_Liikennevirasto'] = 0.15 * df['sigma_v']
 
         # rename some parameters for better representation
@@ -1135,14 +1164,13 @@ def su_reduction_calculation(df):
         # round the calculation output columns to 6 significant digits
         df[cols_to_round] = df[cols_to_round].round(6)
 
-        df["friction_angle_phi"] = pd.to_numeric(df["friction_angle_phi"], errors="coerce")
         df["Su_FVT_Measured_kPa"] = np.where(df["Su_FVT_Measured_kPa"] == 0, np.nan,
                                                            df["Su_FVT_Measured_kPa"])
         df["Point_ID"] = np.where(df["Point_ID"].notna(), df["Point_ID"], 0)
 
         return df[selected_columns]
     except Exception as e:
-        messagebox.showerror("Status", f"Calculation not executed.\nPlease browse and extract tek file and fill missing parameters first.")
+        messagebox.showerror("Status", f"Calculation not executed.\nPlease check the input data!")
         logging.error(f"No data found - {e}")
         return
 
